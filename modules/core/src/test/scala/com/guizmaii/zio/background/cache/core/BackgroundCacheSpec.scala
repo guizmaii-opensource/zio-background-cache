@@ -59,6 +59,32 @@ object BackgroundCacheSpec extends ZIOSpecDefault {
         } yield result
       }
     ),
+    suite("BackgroundCache.make(warmupSchedule)")(
+      test("retries on warmupSchedule while Loading, then switches to schedule once Healthy") {
+        for {
+          calls  <- Ref.make(0)
+          fetch   = scriptedFetch(Vector(Left("boom"), Right(1), Right(2)), calls)
+          result <- ZIO.scoped {
+                      for {
+                        cache    <- BackgroundCache.make(fetch, schedule = Schedule.spaced(1.day), warmupSchedule = Schedule.spaced(1.second))
+                        _        <- TestClock.adjust(1.second) // warmup tick: the second attempt succeeds
+                        healthy  <- awaitState(cache) {
+                                      case CacheState.Healthy(1, _) => true
+                                      case _                        => false
+                                    }
+                        _        <- TestClock.adjust(1.second) // far too short for the 1-day steady-state schedule
+                        unchanged = cache.state()
+                      } yield assertTrue(
+                        healthy match {
+                          case CacheState.Healthy(1, _) => true
+                          case _                        => false
+                        },
+                        unchanged == healthy
+                      )
+                    }
+        } yield result
+      }
+    ),
     suite("BackgroundCache::state")(
       test("keeps the last good value and moves to Degraded when a refresh fails, then recovers on the next tick") {
         for {

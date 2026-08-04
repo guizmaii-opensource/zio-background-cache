@@ -46,6 +46,12 @@ def useTheCache(cache: BackgroundCache[Throwable, Config]): UIO[Unit] =
   `Healthy(value, lastSuccessAt)`, or `Degraded(value, lastSuccessAt, lastError)`.
 - `cache.refresh: IO[E, Unit]` forces an immediate fetch on top of the schedule, and fails if that
   fetch fails; `get()` keeps serving the last good value regardless.
+- `BackgroundCache.make(fetch, schedule, warmupSchedule)` retries on `warmupSchedule` instead of
+  `schedule` while the cache is still `Loading` (no fetch has ever succeeded) — useful to retry
+  more aggressively while cold-starting than during steady-state operation, e.g.
+  `Schedule.spaced(250.millis) && Schedule.upTo(5.seconds)` to warm up, then
+  `Schedule.spaced(30.seconds)` once healthy. It only ever applies before the first success: once
+  the cache reaches `Healthy`, it switches to `schedule` for good, even if a later fetch fails.
 
 ## Design: what happens when a refresh fails?
 

@@ -49,13 +49,28 @@ object BackgroundCache {
     fetch: ZIO[R, E, A],
     schedule: Schedule[R, Any, Any]
   )(implicit trace: Trace): URIO[R & Scope, BackgroundCache[E, A]] =
+    make(fetch, schedule, schedule)
+
+  /**
+   * Like [[make]], but retries on `warmupSchedule` instead of `schedule` while the cache is still
+   * `Loading` (no fetch has ever succeeded) - useful to retry more aggressively while cold-starting
+   * than during steady-state operation. Once the first fetch succeeds, the cache switches to
+   * `schedule` for good, even if a later fetch fails: `warmupSchedule` only ever applies before
+   * the first success.
+   */
+  def make[R, E, A](
+    fetch: ZIO[R, E, A],
+    schedule: Schedule[R, Any, Any],
+    warmupSchedule: Schedule[R, Any, Any]
+  )(implicit trace: Trace): URIO[R & Scope, BackgroundCache[E, A]] =
     for {
-      env      <- ZIO.environment[R]
-      fetchR    = fetch.provideEnvironment(env)
-      scheduleR = schedule.provideEnvironment(env)
-      ref       = new AtomicReference[CacheState[E, A]](CacheState.Loading)
-      cache     = new BackgroundCacheLive(ref, fetchR)
-      _        <- cache.loop(scheduleR).forkScoped
+      env            <- ZIO.environment[R]
+      fetchR          = fetch.provideEnvironment(env)
+      scheduleR       = schedule.provideEnvironment(env)
+      warmupScheduleR = warmupSchedule.provideEnvironment(env)
+      ref             = new AtomicReference[CacheState[E, A]](CacheState.Loading)
+      cache           = new BackgroundCacheLive(ref, fetchR)
+      _              <- cache.loop(scheduleR, warmupScheduleR).forkScoped
     } yield cache
 
 }
@@ -69,17 +84,38 @@ private final class BackgroundCacheLive[E, A](
 
   override def refresh(implicit trace: Trace): IO[E, Unit] = runFetch
 
-  // `foldZIO` below only observes typed `E` failures: a defect (an unexpected exception `fetch`
-  // didn't wrap into `E`) would otherwise propagate straight through `.ignore` and kill this
-  // forked fiber, silently ending all future refreshes. `catchAllDefect` only intercepts defects
-  // (never interruption, which must keep propagating so `forkScoped` cleanup still works), and
-  // there's no `E` value to record it against, so it's just logged and the schedule retries.
-  private[core] def loop(schedule: Schedule[Any, Any, Any])(implicit trace: Trace): URIO[Any, Unit] =
-    runFetch
-      .catchAllDefect(defect => ZIO.logWarningCause("Background cache refresh attempt died unexpectedly", Cause.die(defect)))
-      .ignore
-      .repeat(schedule)
-      .unit
+  // `foldZIO` in `runFetch` below only observes typed `E` failures: a defect (an unexpected
+  // exception `fetch` didn't wrap into `E`) would otherwise propagate straight through `.ignore`
+  // and kill this forked fiber, silently ending all future refreshes. `catchAllDefect` only
+  // intercepts defects (never interruption, which must keep propagating so `forkScoped` cleanup
+  // still works), and there's no `E` value to record it against, so it's just logged and the
+  // schedule retries.
+  //
+  // Runs in two phases: `warmupSchedule` drives retries while still `Loading` (stopping the
+  // moment a fetch succeeds, via `whileInput`, not just when `warmupSchedule` itself is
+  // exhausted), then `schedule` takes over for good. The steady-state phase is driven manually
+  // (rather than via `.repeat`, which always runs its effect once immediately) so the warmup ->
+  // steady-state handoff doesn't cost an extra, redundant fetch right after warmup just succeeded.
+  private[core] def loop(schedule: Schedule[Any, Any, Any], warmupSchedule: Schedule[Any, Any, Any])(
+    implicit trace: Trace
+  ): URIO[Any, Unit] = {
+    val attempt: URIO[Any, Unit] =
+      runFetch
+        .catchAllDefect(defect => ZIO.logWarningCause("Background cache refresh attempt died unexpectedly", Cause.die(defect)))
+        .ignore
+
+    def isLoading: Boolean =
+      ref.get() match {
+        case CacheState.Loading => true
+        case _                  => false
+      }
+
+    for {
+      _      <- attempt.repeat(warmupSchedule.whileInput((_: Any) => isLoading))
+      driver <- schedule.driver
+      _      <- (driver.next(()) *> attempt).forever.ignore
+    } yield ()
+  }
 
   // A manual `refresh` can race a scheduled tick. Before every write, checks whether what's
   // already there is fresher than what triggered this write; if so, keeps it. This way the
