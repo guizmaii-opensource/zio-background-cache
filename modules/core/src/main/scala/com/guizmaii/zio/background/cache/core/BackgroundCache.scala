@@ -96,7 +96,7 @@ private final class BackgroundCacheLive[E, A](
     Clock.instant.flatMap { attemptStartedAt =>
       fetchR.foldZIO(
         error =>
-          ZIO.suspendSucceed {
+          Clock.instant.flatMap { attemptFailedAt =>
             ref.updateAndGet { current =>
               if (isFresherThan(current, attemptStartedAt)) current
               else
@@ -107,13 +107,20 @@ private final class BackgroundCacheLive[E, A](
                   case CacheState.Degraded(value, lastSuccessAt, _) => CacheState.Degraded(value, lastSuccessAt, error)
                 }
             }
-            ZIO.logWarningCause("Background cache refresh failed", Cause.fail(error)) *> ZIO.fail(error)
+            ZIO.logDebug(
+              s"Background cache refresh attempt failed in ${millisBetween(attemptStartedAt, attemptFailedAt)}ms"
+            ) *>
+              ZIO.logWarningCause("Background cache refresh failed", Cause.fail(error)) *>
+              ZIO.fail(error)
           },
         value =>
-          Clock.instant.map { now =>
+          Clock.instant.flatMap { now =>
             ref.updateAndGet(current => if (isFresherThan(current, now)) current else CacheState.Healthy(value, now))
-          }.unit
+            ZIO.logDebug(s"Background cache refresh attempt succeeded in ${millisBetween(attemptStartedAt, now)}ms")
+          }
       )
     }
+
+  private def millisBetween(start: Instant, end: Instant): Long = end.toEpochMilli - start.toEpochMilli
 
 }

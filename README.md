@@ -62,11 +62,13 @@ The one case with no value to fall back to is before the very first fetch has su
 `state()` is `Loading`, and a failed attempt is retried on the next tick without exposing an
 error, since there's nothing meaningful to report yet.
 
-Every failed refresh attempt the background loop makes is also logged via ZIO's built-in logging
-(`ZIO.logWarningCause`), so it shows up in your logs even if nothing is polling `state()` — this
-includes a `fetch` that dies with an unexpected defect rather than a typed failure: the loop logs
-it and keeps retrying on schedule rather than silently stopping. A manual `refresh()` call doesn't
-log on your behalf; you already have the result of that call directly.
+Every refresh attempt logs via ZIO's built-in logging, whether it comes from the periodic schedule
+or a manual `refresh()` call: a DEBUG line either way, with the outcome and how long the attempt
+took, plus a WARN line with the full cause on failure — so failures show up in your logs even if
+nothing is polling `state()`. A `fetch` that dies with an unexpected defect rather than a typed
+failure is a special case: only the background loop catches and logs it (and keeps retrying on
+schedule rather than silently stopping); a defect from a manual `refresh()` call propagates
+normally, since you're already there to handle it.
 
 ## Metrics (`zio-background-cache-opentelemetry`)
 
