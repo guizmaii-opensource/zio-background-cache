@@ -2,9 +2,9 @@ import BuildHelper.{noDoc, stdSettings}
 
 Global / onChangedBuildSource := ReloadOnSourceChanges
 
-ThisBuild / scalaVersion := "3.3.7"
-ThisBuild / scalafmtCheck := true
-ThisBuild / scalafmtSbtCheck := true
+ThisBuild / scalaVersion      := "3.3.7"
+ThisBuild / scalafmtCheck     := true
+ThisBuild / scalafmtSbtCheck  := true
 ThisBuild / scalafmtOnCompile := !insideCI.value
 ThisBuild / scalafixOnCompile := !insideCI.value
 ThisBuild / semanticdbEnabled := true
@@ -38,7 +38,8 @@ lazy val core =
     .settings(
       name := "zio-background-cache-core",
       libraryDependencies ++= Seq(
-        "dev.zio" %% "zio-test" % zioVersion % Test,
+        "dev.zio" %% "zio"          % zioVersion,
+        "dev.zio" %% "zio-test"     % zioVersion % Test,
         "dev.zio" %% "zio-test-sbt" % zioVersion % Test,
       ),
       testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
@@ -47,9 +48,9 @@ lazy val core =
 inThisBuild(
   List(
     organization := "com.guizmaii",
-    homepage := Some(url("https://github.com/guizmaii-opensource/zio-background-cache")),
-    licenses := List("Apache 2.0" -> url("https://opensource.org/license/apache-2.0")),
-    developers := List(
+    homepage     := Some(url("https://github.com/guizmaii-opensource/zio-background-cache")),
+    licenses     := List("Apache 2.0" -> url("https://opensource.org/license/apache-2.0")),
+    developers   := List(
       Developer(
         "guizmaii",
         "Jules Ivanic",
