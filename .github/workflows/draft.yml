@@ -1,0 +1,40 @@
+name: Release Drafter
+
+on:
+  push:
+    branches:
+      - main
+
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  # Maintains the draft release on main. Only runs on push because the
+  # action sets target_commitish on the draft, and on pull_request events
+  # the GitHub-synthesized refs/pull/N/merge ref is not a valid commitish
+  # for the Releases API.
+  update_release_draft:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: release-drafter/release-drafter@v7.2.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Applies labels to PRs based on title patterns from .github/release-drafter.yml
+  # autolabeler config. Uses the dedicated sub-action so it doesn't try to
+  # update any release.
+  autolabeler:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: release-drafter/release-drafter/autolabeler@v7.2.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
