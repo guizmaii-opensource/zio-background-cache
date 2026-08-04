@@ -61,3 +61,146 @@ consumers that only want the value never have to.
 The one case with no value to fall back to is before the very first fetch has succeeded: there,
 `state()` is `Loading`, and a failed attempt is retried on the next tick without exposing an
 error, since there's nothing meaningful to report yet.
+
+Every failed refresh attempt the background loop makes is also logged via ZIO's built-in logging
+(`ZIO.logWarningCause`), so it shows up in your logs even if nothing is polling `state()` — this
+includes a `fetch` that dies with an unexpected defect rather than a typed failure: the loop logs
+it and keeps retrying on schedule rather than silently stopping. A manual `refresh()` call doesn't
+log on your behalf; you already have the result of that call directly.
+
+## Metrics (`zio-background-cache-opentelemetry`)
+
+An optional module records refresh metrics against an
+[OpenTelemetry](https://opentelemetry.io) `Meter`, via
+[zio-opentelemetry](https://github.com/zio/zio-telemetry). It's a separate artifact so the core
+module has no OpenTelemetry dependency at all.
+
+```scala
+libraryDependencies += "com.guizmaii" %% "zio-background-cache-opentelemetry" % "<version>"
+```
+
+```scala
+import com.guizmaii.zio.background.cache.core._
+import com.guizmaii.zio.background.cache.opentelemetry._
+import zio.telemetry.opentelemetry.core.metrics.Meter
+
+val program: ZIO[Scope & Meter, Nothing, Unit] =
+  for {
+    metrics <- BackgroundCacheMetrics.make
+    cache   <- BackgroundCache.make(metrics.instrument("config", fetchConfig), Schedule.fixed(30.seconds))
+    _       <- useTheCache(cache)
+  } yield ()
+```
+
+`BackgroundCacheMetrics.make` builds the underlying counters/histogram/gauge once against the
+`Meter` in the environment. Its `instrument(name, fetch)` method then wraps a fetch effect, cheaply
+and as many times as you have caches, so every attempt (including the ones the background loop
+makes) is recorded against those same instruments, tagged with a `cache="<name>"` attribute so
+several caches sharing one `Meter` stay distinguishable:
+
+| Metric                              | Type      | Notes                                    |
+|--------------------------------------|-----------|-------------------------------------------|
+| `background_cache.refresh.total`     | Counter   | Every attempt, success or failure          |
+| `background_cache.refresh.success`   | Counter   | Successful attempts                        |
+| `background_cache.refresh.failure`   | Counter   | Failed attempts                            |
+| `background_cache.refresh.duration`  | Histogram | Fetch duration, in milliseconds            |
+| `background_cache.health`            | Gauge     | `1` after a success, `0` after a failure   |
+
+This mirrors the metric set from scala-nimbus-jose-jwt's `JwksManager`.
+
+### Example Grafana dashboard
+
+The panels below assume metrics reach Prometheus through an OTel Collector's Prometheus exporter,
+which normalizes OTel instrument names to Prometheus convention (dots to underscores, a `_total`
+suffix on counters, the unit spelled out on histograms — `ms` becomes `milliseconds`). Adjust the
+metric names below if your pipeline exports metrics differently.
+
+```json
+{
+  "title": "zio-background-cache",
+  "schemaVersion": 39,
+  "timezone": "browser",
+  "templating": {
+    "list": [
+      {
+        "name": "cache",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": "label_values(background_cache_health, cache)",
+        "multi": true,
+        "includeAll": true
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Refresh rate (success vs failure)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(rate(background_cache_refresh_success_total{cache=~\"$cache\"}[5m])) by (cache)",
+          "legendFormat": "{{cache}} success"
+        },
+        {
+          "expr": "sum(rate(background_cache_refresh_failure_total{cache=~\"$cache\"}[5m])) by (cache)",
+          "legendFormat": "{{cache}} failure"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Refresh duration (p50 / p95 / p99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(background_cache_refresh_duration_milliseconds_bucket{cache=~\"$cache\"}[5m])) by (le, cache))",
+          "legendFormat": "{{cache}} p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(background_cache_refresh_duration_milliseconds_bucket{cache=~\"$cache\"}[5m])) by (le, cache))",
+          "legendFormat": "{{cache}} p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(background_cache_refresh_duration_milliseconds_bucket{cache=~\"$cache\"}[5m])) by (le, cache))",
+          "legendFormat": "{{cache}} p99"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Cache health",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "background_cache_health{cache=~\"$cache\"}",
+          "legendFormat": "{{cache}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "Degraded", "color": "red" } } },
+            { "type": "value", "options": { "1": { "text": "Healthy", "color": "green" } } }
+          ]
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Total refresh attempts",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(background_cache_refresh_total{cache=~\"$cache\"}[5m])) by (cache)",
+          "legendFormat": "{{cache}}"
+        }
+      ]
+    }
+  ]
+}
+```

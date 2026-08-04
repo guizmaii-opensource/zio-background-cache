@@ -69,8 +69,17 @@ private final class BackgroundCacheLive[E, A](
 
   override def refresh(implicit trace: Trace): IO[E, Unit] = runFetch
 
+  // `foldZIO` below only observes typed `E` failures: a defect (an unexpected exception `fetch`
+  // didn't wrap into `E`) would otherwise propagate straight through `.ignore` and kill this
+  // forked fiber, silently ending all future refreshes. `catchAllDefect` only intercepts defects
+  // (never interruption, which must keep propagating so `forkScoped` cleanup still works), and
+  // there's no `E` value to record it against, so it's just logged and the schedule retries.
   private[core] def loop(schedule: Schedule[Any, Any, Any])(implicit trace: Trace): URIO[Any, Unit] =
-    runFetch.ignore.repeat(schedule).unit
+    runFetch
+      .catchAllDefect(defect => ZIO.logWarningCause("Background cache refresh attempt died unexpectedly", Cause.die(defect)))
+      .ignore
+      .repeat(schedule)
+      .unit
 
   // A manual `refresh` can race a scheduled tick. Before every write, checks whether what's
   // already there is fresher than what triggered this write; if so, keeps it. This way the
@@ -98,7 +107,7 @@ private final class BackgroundCacheLive[E, A](
                   case CacheState.Degraded(value, lastSuccessAt, _) => CacheState.Degraded(value, lastSuccessAt, error)
                 }
             }
-            ZIO.fail(error)
+            ZIO.logWarningCause("Background cache refresh failed", Cause.fail(error)) *> ZIO.fail(error)
           },
         value =>
           Clock.instant.map { now =>

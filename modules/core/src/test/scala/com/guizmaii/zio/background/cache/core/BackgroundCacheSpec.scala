@@ -89,6 +89,27 @@ object BackgroundCacheSpec extends ZIOSpecDefault {
         } yield result
       }
     ),
+    suite("BackgroundCache::loop")(
+      test("survives a defect in fetch instead of dying, and keeps retrying on schedule") {
+        for {
+          calls  <- Ref.make(0)
+          fetch   = calls.getAndUpdate(_ + 1).flatMap {
+                      case 0 => ZIO.die(new RuntimeException("boom"))
+                      case _ => ZIO.succeed(1)
+                    }
+          result <- ZIO.scoped {
+                      for {
+                        cache     <- BackgroundCache.make(fetch, Schedule.spaced(1.second))
+                        _         <- TestClock.adjust(1.second)
+                        recovered <- awaitState(cache) {
+                                       case CacheState.Healthy(1, _) => true
+                                       case _                        => false
+                                     }
+                      } yield assertTrue(recovered.isInstanceOf[CacheState.Healthy[?, ?]])
+                    }
+        } yield result
+      }
+    ),
     suite("BackgroundCache::refresh")(
       test("propagates the fetch error to the caller while still updating state") {
         for {
