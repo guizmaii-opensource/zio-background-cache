@@ -97,30 +97,26 @@ private final class BackgroundCacheLive[E, A](
       fetchR.foldZIO(
         error =>
           Clock.instant.flatMap { attemptFailedAt =>
-            ZIO.suspendSucceed {
-              ref.updateAndGet { current =>
-                if (isFresherThan(current, attemptStartedAt)) current
-                else
-                  current match {
-                    // No value to fall back to yet: stay Loading, the schedule will retry.
-                    case CacheState.Loading                           => CacheState.Loading
-                    case CacheState.Healthy(value, lastSuccessAt)     => CacheState.Degraded(value, lastSuccessAt, error)
-                    case CacheState.Degraded(value, lastSuccessAt, _) => CacheState.Degraded(value, lastSuccessAt, error)
-                  }
-              }
-              ZIO.logDebug(
-                s"Background cache refresh attempt failed in ${millisBetween(attemptStartedAt, attemptFailedAt)}ms"
-              ) *>
-                ZIO.logWarningCause("Background cache refresh failed", Cause.fail(error)) *>
-                ZIO.fail(error)
+            ref.updateAndGet { current =>
+              if (isFresherThan(current, attemptStartedAt)) current
+              else
+                current match {
+                  // No value to fall back to yet: stay Loading, the schedule will retry.
+                  case CacheState.Loading                           => CacheState.Loading
+                  case CacheState.Healthy(value, lastSuccessAt)     => CacheState.Degraded(value, lastSuccessAt, error)
+                  case CacheState.Degraded(value, lastSuccessAt, _) => CacheState.Degraded(value, lastSuccessAt, error)
+                }
             }
+            ZIO.logDebug(
+              s"Background cache refresh attempt failed in ${millisBetween(attemptStartedAt, attemptFailedAt)}ms"
+            ) *>
+              ZIO.logWarningCause("Background cache refresh failed", Cause.fail(error)) *>
+              ZIO.fail(error)
           },
         value =>
           Clock.instant.flatMap { now =>
-            ZIO.suspendSucceed {
-              ref.updateAndGet(current => if (isFresherThan(current, now)) current else CacheState.Healthy(value, now))
-              ZIO.logDebug(s"Background cache refresh attempt succeeded in ${millisBetween(attemptStartedAt, now)}ms")
-            }
+            ref.updateAndGet(current => if (isFresherThan(current, now)) current else CacheState.Healthy(value, now))
+            ZIO.logDebug(s"Background cache refresh attempt succeeded in ${millisBetween(attemptStartedAt, now)}ms")
           }
       )
     }
