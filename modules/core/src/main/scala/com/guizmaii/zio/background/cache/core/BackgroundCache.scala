@@ -98,7 +98,7 @@ private final class BackgroundCacheLive[E, A](
                   case CacheState.Degraded(value, lastSuccessAt, _) => CacheState.Degraded(value, lastSuccessAt, error)
                 }
             }
-            ZIO.fail(error)
+            ZIO.logWarningCause("Background cache refresh failed", Cause.fail(error)) *> ZIO.fail(error)
           },
         value =>
           Clock.instant.map { now =>

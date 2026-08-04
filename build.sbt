@@ -20,7 +20,8 @@ addCommandAlias("check", "scalafixAll --check; scalafmtCheckAll; scalafmtSbtChec
 
 // ### Dependencies ###
 
-lazy val zioVersion = "2.1.25"
+lazy val zioVersion              = "2.1.25"
+lazy val zioOpenTelemetryVersion = "4.0.0-RC12"
 
 // ### Modules ###
 
@@ -29,7 +30,7 @@ lazy val root =
     .settings(noDoc *)
     .settings(publish / skip := true)
     .settings(crossScalaVersions := Nil) // https://www.scala-sbt.org/1.x/docs/Cross-Build.html#Cross+building+a+project+statefully,
-    .aggregate(core)
+    .aggregate(core, opentelemetry)
 
 lazy val core =
   project
@@ -44,6 +45,22 @@ lazy val core =
       ),
       testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
     )
+
+lazy val opentelemetry =
+  project
+    .in(file("modules/opentelemetry"))
+    .settings(stdSettings *)
+    .settings(
+      name := "zio-background-cache-opentelemetry",
+      libraryDependencies ++= Seq(
+        "dev.zio" %% "zio-opentelemetry-core"    % zioOpenTelemetryVersion,
+        "dev.zio" %% "zio-opentelemetry-testkit" % zioOpenTelemetryVersion % Test,
+        "dev.zio" %% "zio-test"                  % zioVersion              % Test,
+        "dev.zio" %% "zio-test-sbt"              % zioVersion              % Test,
+      ),
+      testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
+    )
+    .dependsOn(core)
 
 inThisBuild(
   List(
