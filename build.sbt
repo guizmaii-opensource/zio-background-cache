@@ -2,7 +2,7 @@ import BuildHelper.{noDoc, stdSettings}
 
 Global / onChangedBuildSource := ReloadOnSourceChanges
 
-ThisBuild / scalaVersion      := "3.3.7"
+ThisBuild / scalaVersion      := "3.3.8"
 ThisBuild / scalafmtCheck     := true
 ThisBuild / scalafmtSbtCheck  := true
 ThisBuild / scalafmtOnCompile := !insideCI.value
@@ -20,7 +20,7 @@ addCommandAlias("check", "scalafixAll --check; scalafmtCheckAll; scalafmtSbtChec
 
 // ### Dependencies ###
 
-lazy val zioVersion              = "2.1.25"
+lazy val zioVersion              = "2.1.26"
 lazy val zioOpenTelemetryVersion = "4.0.0-RC12"
 
 // ### Modules ###
