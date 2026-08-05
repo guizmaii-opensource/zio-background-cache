@@ -52,6 +52,27 @@ def useTheCache(cache: BackgroundCache[Throwable, Config]): UIO[Unit] =
   `Schedule.spaced(250.millis) && Schedule.upTo(5.seconds)` to warm up, then
   `Schedule.spaced(30.seconds)` once healthy. It only ever applies before the first success: once
   the cache reaches `Healthy`, it switches to `schedule` for good, even if a later fetch fails.
+  This still never blocks or fails `make` itself, though — the cache can still come back `Loading`.
+- `BackgroundCache.makeAwaitingFirst(fetch, schedule, bootRetrySchedule)` is for when you'd rather
+  fail construction than ever hand back a `Loading` cache: it performs the first fetch
+  synchronously, retrying on `bootRetrySchedule` (defaults to a single attempt, no retries), and
+  fails with the same error if every attempt does. On success, the returned cache is already
+  `Healthy`, and the background loop (governed by `schedule` alone, no warmup phase needed) only
+  starts after that. Unlike `warmupSchedule`, `bootRetrySchedule` sees the real fetch error on
+  every attempt — there's no cache state yet to reconcile it against, so it's just
+  `fetch.retry(bootRetrySchedule)`.
+
+  ```scala
+  val program: ZIO[Scope, Throwable, Unit] =
+    for {
+      cache <- BackgroundCache.makeAwaitingFirst(
+                 fetchConfig,
+                 schedule = Schedule.fixed(30.seconds),
+                 bootRetrySchedule = Schedule.spaced(250.millis) && Schedule.upTo(5.seconds)
+               )
+      _     <- useTheCache(cache) // cache.get() is never NotYetAvailable here
+    } yield ()
+  ```
 
 ## Design: what happens when a refresh fails?
 

@@ -85,6 +85,75 @@ object BackgroundCacheSpec extends ZIOSpecDefault {
         } yield result
       }
     ),
+    suite("BackgroundCache.makeAwaitingFirst")(
+      test("returns a cache already Healthy, having performed the first fetch synchronously") {
+        for {
+          result <- ZIO.scoped {
+                      for {
+                        cache <- BackgroundCache.makeAwaitingFirst(ZIO.succeed(1), Schedule.spaced(1.day))
+                      } yield assertTrue(
+                        cache.state() match {
+                          case CacheState.Healthy(1, _) => true
+                          case _                        => false
+                        },
+                        cache.get() == CacheValue.Available(1)
+                      )
+                    }
+        } yield result
+      },
+      test("fails with the real error, and returns no cache, when every boot attempt fails") {
+        for {
+          result <- ZIO.scoped {
+                      BackgroundCache.makeAwaitingFirst(ZIO.fail("boom"), Schedule.spaced(1.day)).either
+                    }
+        } yield assertTrue(result == Left("boom"))
+      },
+      test("retries on bootRetrySchedule, which sees the real error on every attempt") {
+        for {
+          calls            <- Ref.make(0)
+          seenErrors       <- Ref.make(Vector.empty[String])
+          fetch             = scriptedFetch(Vector(Left("transient"), Left("transient"), Right(1)), calls)
+          bootRetrySchedule = Schedule.recurWhileZIO[Any, String](error => seenErrors.update(_ :+ error).as(error == "transient"))
+          result           <- ZIO.scoped {
+                                for {
+                                  cache  <- BackgroundCache.makeAwaitingFirst(fetch, Schedule.spaced(1.day), bootRetrySchedule)
+                                  errors <- seenErrors.get
+                                } yield assertTrue(
+                                  cache.get() == CacheValue.Available(1),
+                                  errors == Vector("transient", "transient")
+                                )
+                              }
+        } yield result
+      },
+      test("doesn't fire a redundant extra fetch right after boot, and keeps refreshing on schedule afterwards") {
+        for {
+          calls  <- Ref.make(0)
+          fetch   = scriptedFetch(Vector(Right(1), Right(2)), calls)
+          result <- ZIO.scoped {
+                      for {
+                        cache          <- BackgroundCache.makeAwaitingFirst(fetch, Schedule.spaced(1.second))
+                        booted          = cache.state()
+                        callsAfterBoot <- calls.get
+                        _              <- TestClock.adjust(1.second)
+                        refreshed      <- awaitState(cache) {
+                                            case CacheState.Healthy(2, _) => true
+                                            case _                        => false
+                                          }
+                      } yield assertTrue(
+                        booted match {
+                          case CacheState.Healthy(1, _) => true
+                          case _                        => false
+                        },
+                        callsAfterBoot == 1,
+                        refreshed match {
+                          case CacheState.Healthy(2, _) => true
+                          case _                        => false
+                        }
+                      )
+                    }
+        } yield result
+      }
+    ),
     suite("BackgroundCache::state")(
       test("keeps the last good value and moves to Degraded when a refresh fails, then recovers on the next tick") {
         for {
