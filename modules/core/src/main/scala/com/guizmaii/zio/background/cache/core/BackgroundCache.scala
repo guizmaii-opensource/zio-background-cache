@@ -57,6 +57,10 @@ object BackgroundCache {
    * than during steady-state operation. Once the first fetch succeeds, the cache switches to
    * `schedule` for good, even if a later fetch fails: `warmupSchedule` only ever applies before
    * the first success.
+   *
+   * Note this still never blocks or fails `make` itself: a consumer that needs to know, at
+   * construction time, whether the first fetch actually succeeded wants [[makeAwaitingFirst]]
+   * instead.
    */
   def make[R, E, A](
     fetch: ZIO[R, E, A],
@@ -71,6 +75,36 @@ object BackgroundCache {
       ref             = new AtomicReference[CacheState[E, A]](CacheState.Loading)
       cache           = new BackgroundCacheLive(ref, fetchR)
       _              <- cache.loop(scheduleR, warmupScheduleR).forkScoped
+    } yield cache
+
+  /**
+   * Builds a cache like [[make]], but performs the first fetch synchronously before returning,
+   * retrying it on `bootRetrySchedule` (a single attempt, no retries, by default). If every
+   * attempt fails, `makeAwaitingFirst` itself fails with the same error - no cache is returned,
+   * and no background loop is started.
+   *
+   * Unlike [[make]]'s `warmupSchedule`, `bootRetrySchedule` sees the real `E` failure on every
+   * attempt: there is no cache state yet for it to reason about, so it retries the bare `fetch`
+   * effect directly, same as calling `fetch.retry(bootRetrySchedule)` yourself.
+   *
+   * A cache built this way is never observed as `Loading`: by the time `makeAwaitingFirst`
+   * returns, a fetch has already succeeded, and the background refresh loop - governed by
+   * `schedule` alone, with no warmup phase of its own - only starts after that.
+   */
+  def makeAwaitingFirst[R, E, A](
+    fetch: ZIO[R, E, A],
+    schedule: Schedule[R, Any, Any],
+    bootRetrySchedule: Schedule[R, E, Any] = Schedule.stop
+  )(implicit trace: Trace): ZIO[R & Scope, E, BackgroundCache[E, A]] =
+    for {
+      env      <- ZIO.environment[R]
+      fetchR    = fetch.provideEnvironment(env)
+      scheduleR = schedule.provideEnvironment(env)
+      bootR     = bootRetrySchedule.provideEnvironment(env)
+      ref       = new AtomicReference[CacheState[E, A]](CacheState.Loading)
+      cache     = new BackgroundCacheLive(ref, fetchR)
+      _        <- cache.refresh.retry(bootR)
+      _        <- cache.steadyStateLoop(scheduleR).forkScoped
     } yield cache
 
 }
@@ -90,32 +124,35 @@ private final class BackgroundCacheLive[E, A](
   // intercepts defects (never interruption, which must keep propagating so `forkScoped` cleanup
   // still works), and there's no `E` value to record it against, so it's just logged and the
   // schedule retries.
-  //
+  private def attempt(implicit trace: Trace): URIO[Any, Unit] =
+    runFetch
+      .catchAllDefect(defect => ZIO.logWarningCause("Background cache refresh attempt died unexpectedly", Cause.die(defect)))
+      .ignore
+
   // Runs in two phases: `warmupSchedule` drives retries while still `Loading` (stopping the
   // moment a fetch succeeds, via `whileInput`, not just when `warmupSchedule` itself is
-  // exhausted), then `schedule` takes over for good. The steady-state phase is driven manually
-  // (rather than via `.repeat`, which always runs its effect once immediately) so the warmup ->
-  // steady-state handoff doesn't cost an extra, redundant fetch right after warmup just succeeded.
+  // exhausted), then `steadyStateLoop` takes over for good.
   private[core] def loop(schedule: Schedule[Any, Any, Any], warmupSchedule: Schedule[Any, Any, Any])(
     implicit trace: Trace
   ): URIO[Any, Unit] = {
-    val attempt: URIO[Any, Unit] =
-      runFetch
-        .catchAllDefect(defect => ZIO.logWarningCause("Background cache refresh attempt died unexpectedly", Cause.die(defect)))
-        .ignore
-
     def isLoading: Boolean =
       ref.get() match {
         case CacheState.Loading => true
         case _                  => false
       }
 
+    attempt.repeat(warmupSchedule.whileInput((_: Any) => isLoading)) *> steadyStateLoop(schedule)
+  }
+
+  // Driven manually (rather than via `.repeat`, which always runs its effect once immediately)
+  // so that a caller which already knows the cache is past its first fetch - either `loop` above,
+  // handing off after warmup, or `makeAwaitingFirst`, whose synchronous boot fetch already
+  // succeeded - never pays for a redundant, immediate extra fetch on top of that.
+  private[core] def steadyStateLoop(schedule: Schedule[Any, Any, Any])(implicit trace: Trace): URIO[Any, Unit] =
     for {
-      _      <- attempt.repeat(warmupSchedule.whileInput((_: Any) => isLoading))
       driver <- schedule.driver
       _      <- (driver.next(()) *> attempt).forever.ignore
     } yield ()
-  }
 
   // A manual `refresh` can race a scheduled tick. Before every write, checks whether what's
   // already there is fresher than what triggered this write; if so, keeps it. This way the
