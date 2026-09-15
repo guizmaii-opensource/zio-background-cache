@@ -21,7 +21,7 @@ addCommandAlias("check", "scalafixAll --check; scalafmtCheckAll; scalafmtSbtChec
 // ### Dependencies ###
 
 lazy val zioVersion              = "2.1.26"
-lazy val zioOpenTelemetryVersion = "4.0.0-RC12"
+lazy val zioOpenTelemetryVersion = "4.0.0-RC13"
 
 // ### Modules ###
 
